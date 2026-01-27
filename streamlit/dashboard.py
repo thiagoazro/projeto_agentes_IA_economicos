@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -10,8 +11,24 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+from helpers import (
+    carregar_relatorio_md,
+    carregar_csv,
+    render_secao_entrada,
+    render_secao_contexto,
+    render_secao_saida,
+    criar_grafico_linha_neon,
+    criar_grafico_area_neon,
+    preparar_dados_acao,
+    preparar_dados_indicador,
+    render_historico_com_acoes,
+    adicionar_ao_historico,
+    render_info_sidebar,
+    render_menu_navegacao,
+    render_status_arquivo,
+    render_metrica_card,
+)
 
-import plotly.express as px
 
 # ============================================================
 # Configuração da página
@@ -19,9 +36,11 @@ import plotly.express as px
 st.set_page_config(
     layout="wide",
     page_title="Painel de Análise de Investimentos",
+    page_icon="📊",
+    initial_sidebar_state="expanded",
 )
 
-# CSS extra para deixar o fundo mais “trading room”
+# CSS customizado
 CUSTOM_CSS = """
 <style>
     .stApp {
@@ -31,14 +50,28 @@ CUSTOM_CSS = """
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
-        max-width: 1200px;
+        max-width: 1400px;
+    }
+    .stButton>button {
+        border-radius: 8px;
+        border: 1px solid #22c55e;
+    }
+    .stButton>button:hover {
+        background-color: #22c55e;
+        color: #020617;
+    }
+    .metric-card {
+        background-color: #050816;
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px solid #22c55e;
     }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ============================================================
-# Caminhos de arquivos (raiz do projeto + /data)
+# Caminhos de arquivos
 # ============================================================
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
@@ -55,13 +88,10 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # ============================================================
-# Inicialização do modelo de chat (OpenAI nativo)
+# Inicialização do modelo de chat
 # ============================================================
 chat_model = None
-if not OPENAI_API_KEY:
-    st.error("Variável de ambiente OPENAI_API_KEY não encontrada.")
-    st.warning("O chatbot estará desabilitado até que a chave seja configurada.")
-else:
+if OPENAI_API_KEY:
     try:
         chat_model = ChatOpenAI(
             model="gpt-4.1-mini",
@@ -70,12 +100,11 @@ else:
         )
     except Exception as e:
         st.error(f"Erro ao inicializar o modelo de chat: {e}")
-        st.warning("As funcionalidades do chatbot estarão desabilitadas.")
 
 # ============================================================
 # Contexto do chatbot
 # ============================================================
-contexto_chat = """
+CONTEXTO_CHAT = """
 Você é o "Analista Econômico Virtual", um assistente de IA especializado em economia e mercado financeiro brasileiro.
 
 **Especialidade:**
@@ -96,335 +125,530 @@ Ajudar o usuário a entender o cenário econômico, responder perguntas sobre in
 1. Baseie-se principalmente nesse contexto ao responder.
 2. Seja claro, direto e educativo.
 3. Tenha abordagem consultiva, explicando cenários, riscos e potenciais.
-4. Não dê ordens diretas de investimento (não diga “compre X”), foque em análise.
+4. Não dê ordens diretas de investimento (não diga "compre X"), foque em análise.
 5. Lembre que o cenário é dinâmico e pode mudar.
 6. Ao comentar notícias, foque nos impactos econômicos e nos ativos mencionados.
 7. Adicione contexto relevante mesmo em perguntas simples.
 """
 
 # ============================================================
-# Estado da sessão para histórico do chat
+# Estado da sessão
 # ============================================================
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# ============================================================
-# Cabeçalho
-# ============================================================
-st.title("📊 Painel de Análise de Investimentos")
-st.markdown(
-    "Visão consolidada do mercado financeiro com análises multiagente, dados de ações, "
-    "indicadores econômicos e notícias filtradas."
-)
-st.divider()
+if "historico_acoes" not in st.session_state:
+    st.session_state.historico_acoes = []
+
+if "historico_indicadores" not in st.session_state:
+    st.session_state.historico_indicadores = []
+
 
 # ============================================================
-# Chatbot no topo
+# PÁGINAS
 # ============================================================
-st.header("💬 Converse com o Analista Econômico Virtual")
 
-pergunta_cliente = st.text_input("Digite sua pergunta sobre investimentos ou economia:")
+def pagina_home():
+    """Página principal - Dashboard com visão geral."""
+    st.title("📊 Painel de Análise de Investimentos")
+    st.markdown(
+        "Visão consolidada do mercado financeiro com análises multiagente, "
+        "dados de ações, indicadores econômicos e notícias filtradas."
+    )
+    st.divider()
 
-if pergunta_cliente and chat_model:
-    mensagens = [SystemMessage(content=contexto_chat)]
-
-    # Reconstruir o histórico
-    for troca in st.session_state.chat_history:
-        mensagens.append(HumanMessage(content=troca["pergunta"]))
-        mensagens.append(AIMessage(content=troca["resposta"]))
-
-    mensagens.append(HumanMessage(content=pergunta_cliente))
-
-    try:
-        resposta_obj = chat_model(mensagens)
-        resposta = resposta_obj.content
-        st.session_state.chat_history.append(
-            {"pergunta": pergunta_cliente, "resposta": resposta}
-        )
-
-        st.markdown("### 🧠 Resposta do Agente:")
-        st.write(resposta)
-    except Exception as e:
-        st.error(f"Erro ao obter resposta do agente: {e}")
-
-elif pergunta_cliente and not chat_model:
-    st.warning("O modelo de chat não está configurado. Não é possível processar a pergunta.")
-
-# Histórico do chat
-if chat_model:
-    with st.expander("📜 Histórico da conversa", expanded=False):
-        for i, troca in enumerate(st.session_state.chat_history):
-            st.markdown(f"**Você:** {troca['pergunta']}")
-            st.markdown(f"**Agente:** {troca['resposta']}")
-            if i < len(st.session_state.chat_history) - 1:
-                st.markdown("---")
-
-st.divider()
-
-# ============================================================
-# Funções utilitárias de carregamento
-# ============================================================
-@st.cache_data
-def carregar_relatorio_md(caminho: Path) -> str:
-    if caminho.exists():
-        try:
-            return caminho.read_text(encoding="utf-8")
-        except Exception as e:
-            return f"Erro ao ler o relatório: {e}"
-    return "Relatório não encontrado. Execute a análise dos agentes primeiro."
-
-@st.cache_data
-def carregar_csv(caminho: Path):
-    if not caminho.exists():
-        return f"Arquivo {caminho.name} não encontrado."
-    try:
-        df = pd.read_csv(caminho)
-        if df.empty:
-            return f"Arquivo {caminho.name} está vazio."
-        return df
-    except pd.errors.EmptyDataError:
-        return f"Arquivo {caminho.name} não contém dados para parsear."
-    except Exception as e:
-        return f"Erro ao carregar {caminho.name}: {e}"
-
-# ============================================================
-# Seção: Relatório dos agentes
-# ============================================================
-st.header("📊 Análises Detalhadas")
-st.divider()
-
-st.subheader("🤖 Relatório da Análise dos Agentes (CrewAI)")
-relatorio_agentes = carregar_relatorio_md(ARQUIVO_RELATORIO_AGENTES)
-
-with st.expander("Clique para ver o relatório completo", expanded=False):
-    st.markdown(relatorio_agentes, unsafe_allow_html=True)
-
-st.divider()
-
-# ============================================================
-# Gráficos e dados – Ações e Indicadores
-# ============================================================
-col1, col2 = st.columns(2)
-
-# ------------------------
-# COLUNA 1 – AÇÕES
-# ------------------------
-with col1:
-    st.subheader("📈 Top 10 Ações (últimos registros)")
+    # Métricas rápidas
+    st.subheader("Visão Rápida")
+    col1, col2, col3, col4 = st.columns(4)
 
     df_acoes = carregar_csv(ARQUIVO_ACOES)
-    if isinstance(df_acoes, pd.DataFrame):
-        if "ticker" not in df_acoes.columns:
-            st.error(f"Coluna 'ticker' não encontrada no arquivo {ARQUIVO_ACOES.name}.")
+    df_indicadores = carregar_csv(ARQUIVO_INDICADORES_ECONOMICOS)
+    df_noticias = carregar_csv(ARQUIVO_NOTICIAS)
+
+    with col1:
+        if isinstance(df_acoes, pd.DataFrame) and "ticker" in df_acoes.columns:
+            num_acoes = df_acoes["ticker"].nunique()
+            render_metrica_card("Ações", str(num_acoes), "Ativos monitorados")
         else:
-            tickers = sorted(df_acoes["ticker"].unique())
-            if not tickers:
-                st.info("Nenhum ticker encontrado no arquivo de ações.")
-            else:
-                ticker_selecionado = st.selectbox(
-                    "Selecione uma ação para ver o gráfico:",
-                    tickers,
-                )
+            st.metric("Ações", "N/A")
 
-                if ticker_selecionado:
-                    df_ticker = df_acoes[df_acoes["ticker"] == ticker_selecionado].copy()
+    with col2:
+        if isinstance(df_indicadores, pd.DataFrame) and "indicador" in df_indicadores.columns:
+            num_indicadores = df_indicadores["indicador"].nunique()
+            render_metrica_card("Indicadores", str(num_indicadores), "Métricas econômicas")
+        else:
+            st.metric("Indicadores", "N/A")
 
-                    # Detectar coluna de data (pode ser 'Unnamed: 0', 'data', 'Data', 'Date')
-                    date_col = None
-                    for candidate in ["Unnamed: 0", "data", "Data", "Date"]:
-                        if candidate in df_ticker.columns:
-                            conv = pd.to_datetime(df_ticker[candidate], errors="coerce")
-                            if conv.notna().any():
-                                date_col = candidate
-                                df_ticker["data_plot"] = conv
-                                break
+    with col3:
+        if isinstance(df_noticias, pd.DataFrame):
+            num_noticias = len(df_noticias)
+            render_metrica_card("Notícias", str(num_noticias), "Artigos coletados")
+        else:
+            st.metric("Notícias", "N/A")
 
-                    if date_col is None:
-                        st.warning(
-                            "Não foi possível identificar a coluna de data para o gráfico de ações. "
-                            "Verifique se existe uma coluna como 'Unnamed: 0', 'data', 'Data' ou 'Date'."
-                        )
-                    else:
-                        df_ticker = df_ticker.dropna(subset=["data_plot"])
-                        df_ticker = df_ticker.sort_values("data_plot")
+    with col4:
+        relatorio_existe = ARQUIVO_RELATORIO_AGENTES.exists()
+        status_relatorio = "Disponível" if relatorio_existe else "Pendente"
+        render_metrica_card("Relatório IA", status_relatorio, "Análise CrewAI")
 
-                        if "fechamento" in df_ticker.columns and not df_ticker.empty:
-                            # === GRÁFICO NEON VERDE ===
-                            fig = px.line(
-                                df_ticker,
-                                x="data_plot",
-                                y="fechamento",
-                                title=f"Preço de Fechamento — {ticker_selecionado}",
-                                markers=False,
-                            )
+    st.divider()
 
-                            fig.update_traces(
-                                line=dict(color="#22c55e", width=2.5)  # verde neon
-                            )
+    # Preview dos dados
+    col1, col2 = st.columns(2)
 
-                            fig.update_layout(
-                                template="plotly_dark",
-                                paper_bgcolor="rgba(0,0,0,0)",
-                                plot_bgcolor="#020617",
-                                font=dict(color="#e5e7eb"),
-                                margin=dict(l=40, r=20, t=40, b=40),
-                                xaxis=dict(
-                                    showgrid=False,
-                                    zeroline=False,
-                                    showline=False,
-                                ),
-                                yaxis=dict(
-                                    showgrid=False,
-                                    zeroline=False,
-                                    showline=False,
-                                ),
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.info(
-                                f"Não há dados de fechamento válidos para plotar para {ticker_selecionado}."
-                            )
+    with col1:
+        st.subheader("Últimas Ações")
+        if isinstance(df_acoes, pd.DataFrame) and not df_acoes.empty:
+            st.dataframe(
+                df_acoes.tail(5)[["ticker", "fechamento", "volume"]],
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("Dados de ações não disponíveis")
 
-                        with st.expander(f"Ver tabela de dados - {ticker_selecionado}", expanded=False):
-                            st.dataframe(
-                                df_acoes[df_acoes["ticker"] == ticker_selecionado],
-                                height=300,
-                            )
-    elif isinstance(df_acoes, str):
+    with col2:
+        st.subheader("Últimos Indicadores")
+        if isinstance(df_indicadores, pd.DataFrame) and not df_indicadores.empty:
+            st.dataframe(
+                df_indicadores.tail(5)[["indicador", "data", "valor"]],
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("Indicadores econômicos não disponíveis")
+
+    st.divider()
+
+    # Atalhos de navegação
+    st.subheader("Acesso Rápido")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("Ver Análise dos Agentes", use_container_width=True):
+            st.session_state.navegacao_principal = "Análise Agentes"
+            st.rerun()
+
+    with col2:
+        if st.button("Analisar Ações", use_container_width=True):
+            st.session_state.navegacao_principal = "Ações"
+            st.rerun()
+
+    with col3:
+        if st.button("Conversar com IA", use_container_width=True):
+            st.session_state.navegacao_principal = "Chat"
+            st.rerun()
+
+
+def pagina_analise_agentes():
+    """Página de análise dos agentes CrewAI."""
+    st.title("🤖 Relatório da Análise dos Agentes")
+    st.markdown("Análise multiagente gerada pelo CrewAI")
+    st.divider()
+
+    render_secao_contexto("Status do Arquivo")
+    if not render_status_arquivo(ARQUIVO_RELATORIO_AGENTES, "Relatório de Análise"):
+        st.warning("Execute `python main/main.py` para gerar o relatório.")
+        return
+
+    st.divider()
+
+    render_secao_saida("Relatório Completo")
+    relatorio_agentes = carregar_relatorio_md(ARQUIVO_RELATORIO_AGENTES)
+
+    with st.container():
+        st.markdown(relatorio_agentes, unsafe_allow_html=True)
+
+    st.divider()
+
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if relatorio_agentes and not relatorio_agentes.startswith("Erro"):
+            st.download_button(
+                label="Download Relatório",
+                data=relatorio_agentes,
+                file_name="relatorio_analise.md",
+                mime="text/markdown",
+                use_container_width=True
+            )
+
+
+def pagina_acoes():
+    """Página de análise de ações."""
+    st.title("📈 Análise de Ações da B3")
+    st.markdown("Visualize o desempenho das principais ações do mercado")
+    st.divider()
+
+    df_acoes = carregar_csv(ARQUIVO_ACOES)
+
+    if isinstance(df_acoes, str):
         st.error(df_acoes)
+        return
 
-# ------------------------
-# COLUNA 2 – INDICADORES
-# ------------------------
-with col2:
-    st.subheader("📉 Indicadores Econômicos (IPCA, SELIC, PIB, Dólar, etc.)")
+    if "ticker" not in df_acoes.columns:
+        st.error("Coluna 'ticker' não encontrada no arquivo de ações.")
+        return
+
+    # Seção de entrada
+    render_secao_entrada("Selecione a Ação")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        tickers = sorted(df_acoes["ticker"].unique())
+        ticker_selecionado = st.selectbox(
+            "Ticker:",
+            tickers,
+            key="ticker_selector"
+        )
+
+    with col2:
+        st.metric(
+            "Total de registros",
+            len(df_acoes[df_acoes["ticker"] == ticker_selecionado])
+        )
+
+    st.divider()
+
+    # Seção de contexto
+    render_secao_contexto("Dados Disponíveis")
+
+    df_ticker_raw = df_acoes[df_acoes["ticker"] == ticker_selecionado]
+
+    with st.expander("Ver tabela de dados brutos", expanded=False):
+        st.dataframe(df_ticker_raw, use_container_width=True)
+
+    st.divider()
+
+    # Seção de saída
+    render_secao_saida("Análise Visual")
+
+    df_ticker, erro = preparar_dados_acao(df_acoes, ticker_selecionado)
+
+    if erro:
+        st.warning(erro)
+    elif df_ticker is not None:
+        fig = criar_grafico_linha_neon(
+            df_ticker,
+            x="data_plot",
+            y="fechamento",
+            titulo=f"Preço de Fechamento — {ticker_selecionado}"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Estatísticas
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Último Fechamento", f"R$ {df_ticker['fechamento'].iloc[-1]:.2f}")
+        with col2:
+            st.metric("Média", f"R$ {df_ticker['fechamento'].mean():.2f}")
+        with col3:
+            st.metric("Máximo", f"R$ {df_ticker['fechamento'].max():.2f}")
+        with col4:
+            st.metric("Mínimo", f"R$ {df_ticker['fechamento'].min():.2f}")
+
+        # Adicionar ao histórico
+        if st.button("Salvar no Histórico", key="salvar_acao"):
+            item = {
+                "ticker": ticker_selecionado,
+                "data_consulta": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ultimo_fechamento": float(df_ticker['fechamento'].iloc[-1]),
+                "media": float(df_ticker['fechamento'].mean())
+            }
+            adicionar_ao_historico("historico_acoes", item)
+            st.success("Adicionado ao histórico")
+
+    st.divider()
+
+    # Histórico
+    render_historico_com_acoes("historico_acoes", "Histórico de Consultas de Ações")
+
+
+def pagina_indicadores():
+    """Página de indicadores econômicos."""
+    st.title("📉 Indicadores Econômicos")
+    st.markdown("Acompanhe os principais indicadores da economia brasileira")
+    st.divider()
 
     df_indicadores = carregar_csv(ARQUIVO_INDICADORES_ECONOMICOS)
 
-    if isinstance(df_indicadores, pd.DataFrame):
-        required_cols = ["data", "valor", "indicador"]
-        if not all(col in df_indicadores.columns for col in required_cols):
-            st.error(
-                f"O arquivo {ARQUIVO_INDICADORES_ECONOMICOS.name} deve conter as colunas: "
-                f"{', '.join(required_cols)}."
-            )
-        else:
-            # Converter datas
-            df_indicadores["data"] = pd.to_datetime(
-                df_indicadores["data"], errors="coerce"
-            )
-            df_indicadores = df_indicadores.dropna(subset=["data"])
-
-            if df_indicadores.empty:
-                st.warning("Não há dados válidos de indicadores após conversão de datas.")
-            else:
-                indicadores_disponiveis = sorted(df_indicadores["indicador"].unique())
-                if not indicadores_disponiveis:
-                    st.warning("Nenhum indicador encontrado na coluna 'indicador'.")
-                else:
-                    indicador_selecionado = st.selectbox(
-                        "Selecione o indicador para visualização:",
-                        indicadores_disponiveis,
-                    )
-
-                    if indicador_selecionado:
-                        df_plot = df_indicadores[
-                            df_indicadores["indicador"] == indicador_selecionado
-                        ].copy()
-
-                        if df_plot.empty:
-                            st.info(
-                                f"Não há dados para o indicador '{indicador_selecionado}'."
-                            )
-                        else:
-                            # Garantir valor numérico
-                            if not pd.api.types.is_numeric_dtype(df_plot["valor"]):
-                                df_plot["valor"] = pd.to_numeric(
-                                    df_plot["valor"], errors="coerce"
-                                )
-                                df_plot = df_plot.dropna(subset=["valor"])
-
-                            if df_plot.empty:
-                                st.info(
-                                    f"Não há valores numéricos válidos para plotar para '{indicador_selecionado}'."
-                                )
-                            else:
-                                df_plot = df_plot.sort_values("data")
-
-                                # === GRÁFICO NEON VERDE PARA INDICADOR ===
-                                fig = px.area(
-                                    df_plot,
-                                    x="data",
-                                    y="valor",
-                                    title=f"{indicador_selecionado} — últimos registros",
-                                )
-
-                                fig.update_traces(
-                                    line=dict(color="#22c55e", width=2.0),
-                                    fillcolor="rgba(34,197,94,0.15)",  # verde translúcido
-                                )
-
-                                fig.update_layout(
-                                    template="plotly_dark",
-                                    paper_bgcolor="rgba(0,0,0,0)",
-                                    plot_bgcolor="#020617",
-                                    font=dict(color="#e5e7eb"),
-                                    margin=dict(l=40, r=20, t=40, b=40),
-                                    xaxis=dict(
-                                        showgrid=False,
-                                        zeroline=False,
-                                        showline=False,
-                                    ),
-                                    yaxis=dict(
-                                        showgrid=False,
-                                        zeroline=False,
-                                        showline=False,
-                                    ),
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-
-                                with st.expander(
-                                    f"Ver tabela de dados - {indicador_selecionado}",
-                                    expanded=False,
-                                ):
-                                    st.dataframe(df_plot, height=300)
-    elif isinstance(df_indicadores, str):
+    if isinstance(df_indicadores, str):
         st.error(df_indicadores)
+        return
 
-st.divider()
+    required_cols = ["data", "valor", "indicador"]
+    if not all(col in df_indicadores.columns for col in required_cols):
+        st.error(f"O arquivo deve conter as colunas: {', '.join(required_cols)}")
+        return
 
-# ============================================================
-# Notícias recentes
-# ============================================================
-st.subheader("📰 Notícias Recentes de Investimento")
+    # Converter datas
+    df_indicadores["data"] = pd.to_datetime(df_indicadores["data"], errors="coerce")
+    df_indicadores = df_indicadores.dropna(subset=["data"])
 
-df_noticias = carregar_csv(ARQUIVO_NOTICIAS)
-if isinstance(df_noticias, pd.DataFrame):
-    if "titulo" in df_noticias.columns and "link" in df_noticias.columns:
-        for _, row in df_noticias.head(min(10, len(df_noticias))).iterrows():
-            titulo = str(row["titulo"])
-            link = str(row["link"]) if "link" in row and pd.notna(row["link"]) else ""
+    if df_indicadores.empty:
+        st.warning("Não há dados válidos de indicadores.")
+        return
 
-            st.markdown(f"### {titulo}")
-            if link and link.strip().lower() not in ["nan", "na", "n/a"]:
-                st.markdown(f"[Ler notícia completa]({link})")
-                st.caption(f"Fonte: {row.get('fonte', 'Não informado')}")
-            else:
-                st.caption("Link não disponível.")
-            st.markdown("---")
-    else:
-        st.warning(
-            f"Colunas 'titulo' e 'link' não encontradas em {ARQUIVO_NOTICIAS.name}. "
-            "Exibindo as primeiras 10 linhas como fallback."
+    # Seção de entrada
+    render_secao_entrada("Selecione o Indicador")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        indicadores_disponiveis = sorted(df_indicadores["indicador"].unique())
+        indicador_selecionado = st.selectbox(
+            "Indicador:",
+            indicadores_disponiveis,
+            key="indicador_selector"
         )
+
+    with col2:
+        st.metric(
+            "Total de registros",
+            len(df_indicadores[df_indicadores["indicador"] == indicador_selecionado])
+        )
+
+    st.divider()
+
+    # Seção de contexto
+    render_secao_contexto("Dados Disponíveis")
+
+    df_indicador_raw = df_indicadores[df_indicadores["indicador"] == indicador_selecionado]
+
+    with st.expander("Ver tabela de dados brutos", expanded=False):
+        st.dataframe(df_indicador_raw, use_container_width=True)
+
+    st.divider()
+
+    # Seção de saída
+    render_secao_saida("Análise Visual")
+
+    df_plot, erro = preparar_dados_indicador(df_indicadores, indicador_selecionado)
+
+    if erro:
+        st.warning(erro)
+    elif df_plot is not None:
+        fig = criar_grafico_area_neon(
+            df_plot,
+            x="data",
+            y="valor",
+            titulo=f"{indicador_selecionado} — Histórico"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Estatísticas
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Último Valor", f"{df_plot['valor'].iloc[-1]:.2f}")
+        with col2:
+            st.metric("Média", f"{df_plot['valor'].mean():.2f}")
+        with col3:
+            st.metric("Máximo", f"{df_plot['valor'].max():.2f}")
+        with col4:
+            st.metric("Mínimo", f"{df_plot['valor'].min():.2f}")
+
+        # Adicionar ao histórico
+        if st.button("Salvar no Histórico", key="salvar_indicador"):
+            item = {
+                "indicador": indicador_selecionado,
+                "data_consulta": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ultimo_valor": float(df_plot['valor'].iloc[-1]),
+                "media": float(df_plot['valor'].mean())
+            }
+            adicionar_ao_historico("historico_indicadores", item)
+            st.success("Adicionado ao histórico")
+
+    st.divider()
+
+    # Histórico
+    render_historico_com_acoes("historico_indicadores", "Histórico de Consultas de Indicadores")
+
+
+def pagina_noticias():
+    """Página de notícias."""
+    st.title("📰 Notícias do Mercado Financeiro")
+    st.markdown("Últimas notícias sobre economia e investimentos")
+    st.divider()
+
+    df_noticias = carregar_csv(ARQUIVO_NOTICIAS)
+
+    if isinstance(df_noticias, str):
+        st.error(df_noticias)
+        return
+
+    if "titulo" not in df_noticias.columns or "link" not in df_noticias.columns:
+        st.warning("Colunas 'titulo' e 'link' não encontradas.")
         st.dataframe(df_noticias.head(10))
-elif isinstance(df_noticias, str):
-    st.error(df_noticias)
+        return
+
+    # Filtros
+    render_secao_entrada("Filtros")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        num_noticias = st.slider(
+            "Número de notícias:",
+            min_value=5,
+            max_value=min(50, len(df_noticias)),
+            value=10,
+            step=5
+        )
+
+    with col2:
+        if "fonte" in df_noticias.columns:
+            fontes = ["Todas"] + sorted(df_noticias["fonte"].dropna().unique().tolist())
+            fonte_filtro = st.selectbox("Filtrar por fonte:", fontes)
+        else:
+            fonte_filtro = "Todas"
+
+    st.divider()
+
+    # Aplicar filtros
+    df_filtrado = df_noticias.copy()
+    if fonte_filtro != "Todas" and "fonte" in df_noticias.columns:
+        df_filtrado = df_filtrado[df_filtrado["fonte"] == fonte_filtro]
+
+    render_secao_saida(f"Notícias ({len(df_filtrado)} encontradas)")
+
+    # Renderizar notícias
+    for idx, row in df_filtrado.head(num_noticias).iterrows():
+        titulo = str(row["titulo"])
+        link = str(row["link"]) if pd.notna(row["link"]) else ""
+
+        with st.container():
+            st.markdown(f"### {titulo}")
+
+            col1, col2 = st.columns([3, 1])
+
+            with col1:
+                if link and link.strip().lower() not in ["nan", "na", "n/a"]:
+                    st.markdown(f"[Ler notícia completa]({link})")
+                else:
+                    st.caption("Link não disponível")
+
+            with col2:
+                if "fonte" in row and pd.notna(row["fonte"]):
+                    st.caption(f"Fonte: {row['fonte']}")
+
+            st.divider()
+
+
+def pagina_chat():
+    """Página do chatbot."""
+    st.title("💬 Assistente de Investimentos IA")
+    st.markdown("Converse com o Analista Econômico Virtual")
+    st.divider()
+
+    if not chat_model:
+        st.error("Chatbot não disponível. Variável OPENAI_API_KEY não configurada.")
+        st.info("Configure a chave de API no arquivo .env ou nas variáveis de ambiente.")
+        return
+
+    # Seção de entrada
+    render_secao_entrada("Faça sua Pergunta")
+
+    pergunta_cliente = st.text_input(
+        "Digite sua pergunta sobre investimentos ou economia:",
+        key="chat_input",
+        placeholder="Ex: Como a SELIC afeta o mercado de ações?"
+    )
+
+    enviar = st.button("Enviar", type="primary", use_container_width=False)
+
+    st.divider()
+
+    # Processar pergunta
+    if (pergunta_cliente and enviar) or (pergunta_cliente and len(st.session_state.chat_history) == 0):
+        mensagens = [SystemMessage(content=CONTEXTO_CHAT)]
+
+        for troca in st.session_state.chat_history:
+            mensagens.append(HumanMessage(content=troca["pergunta"]))
+            mensagens.append(AIMessage(content=troca["resposta"]))
+
+        mensagens.append(HumanMessage(content=pergunta_cliente))
+
+        with st.spinner("Analisando sua pergunta..."):
+            try:
+                resposta_obj = chat_model(mensagens)
+                resposta = resposta_obj.content
+                st.session_state.chat_history.append(
+                    {"pergunta": pergunta_cliente, "resposta": resposta}
+                )
+            except Exception as e:
+                st.error(f"Erro ao obter resposta: {e}")
+                return
+
+    # Seção de saída
+    if st.session_state.chat_history:
+        render_secao_saida("Conversa")
+
+        # Mostrar última interação
+        ultima_troca = st.session_state.chat_history[-1]
+
+        with st.container():
+            st.markdown("#### Você:")
+            st.info(ultima_troca["pergunta"])
+
+            st.markdown("#### Analista:")
+            st.success(ultima_troca["resposta"])
+
+        st.divider()
+
+        # Histórico completo
+        with st.expander(f"Histórico Completo ({len(st.session_state.chat_history)} mensagens)", expanded=False):
+            for i, troca in enumerate(st.session_state.chat_history[:-1]):
+                st.markdown(f"**Conversa #{i+1}**")
+                st.markdown(f"**Você:** {troca['pergunta']}")
+                st.markdown(f"**Analista:** {troca['resposta']}")
+                st.markdown("---")
+
+        # Botões de ação
+        col1, col2, col3 = st.columns([2, 1, 1])
+
+        with col2:
+            if st.button("Limpar Histórico", key="limpar_chat"):
+                st.session_state.chat_history = []
+                st.rerun()
+
+        with col3:
+            import json
+            historico_json = json.dumps(st.session_state.chat_history, ensure_ascii=False, indent=2)
+            st.download_button(
+                label="Download",
+                data=historico_json,
+                file_name="chat_historico.json",
+                mime="application/json"
+            )
+
 
 # ============================================================
-# Rodapé / Sidebar
+# MAIN - Navegação e renderização
 # ============================================================
-st.sidebar.info(
-    f"Painel atualizado em: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M:%S')}"
-)
-st.sidebar.markdown("Desenvolvido para demonstração de LLMs + agentes + dados financeiros.")
+
+def main():
+    """Função principal com navegação."""
+
+    # Renderizar menu de navegação na sidebar
+    pagina_atual = render_menu_navegacao()
+
+    # Renderizar informações do sistema na sidebar
+    render_info_sidebar(DATA_DIR)
+
+    # Renderizar página selecionada
+    if pagina_atual == "Home":
+        pagina_home()
+    elif pagina_atual == "Análise Agentes":
+        pagina_analise_agentes()
+    elif pagina_atual == "Ações":
+        pagina_acoes()
+    elif pagina_atual == "Indicadores":
+        pagina_indicadores()
+    elif pagina_atual == "Notícias":
+        pagina_noticias()
+    elif pagina_atual == "Chat":
+        pagina_chat()
+
+
+if __name__ == "__main__":
+    main()
